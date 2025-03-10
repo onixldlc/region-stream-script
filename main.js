@@ -135,8 +135,10 @@ function postXhr(request, body = null) {
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.onload = function() {
             if (xhr.status >= 200 && xhr.status < 300) {
+                console.log(`fetching code: ${xhr.status}`)
                 resolve(xhr.responseText);
             } else {
+                console.log(`ERROR!\n status:${xhr.status}\n statusText:${xhr.statusText}`)
                 reject({
                     status: xhr.status,
                     statusText: xhr.statusText
@@ -144,6 +146,7 @@ function postXhr(request, body = null) {
             }
         };
         xhr.onerror = function() {
+            console.log(`ERROR!\n status:${xhr.status}\n statusText:${xhr.statusText}`)
             reject({
                 status: xhr.status,
                 statusText: xhr.statusText
@@ -168,7 +171,7 @@ async function getInfoItem(entry){
     }
 }
 
-async function getAllRegionInfo(entries, limit=0){
+async function getAllRegionInfo(entries, sleep_ms=3000, limit=0){
     const data = {
         AvailableSeasons: [],
         totalEpisodes: 0,
@@ -182,18 +185,19 @@ async function getAllRegionInfo(entries, limit=0){
             break
         }
 
-        await sleep(3000)
+        await sleep(sleep_ms)
 
         index += 1
         const region_template = {
             RegionCode: "",
-            RegionProviderList: [],
+            RegionProviders: {},
         }
 
         console.log(`grabbing region info for: ${entry.href_lang} (${index}/${entries.length})`)
         const info = await getInfoItem(entry)
         const node = info.data.urlV2.node
         const region = entry.href_lang.split('-')[1]
+        console.log(`loading region info: ${region}`)
 
         if(index == 1){
             const season_list = node.seasons.reverse()
@@ -213,13 +217,18 @@ async function getAllRegionInfo(entries, limit=0){
 
         for (offer of offers){
             const provider_template = {
-                Provider: offer.package.clearName,
-                AvailableSeasons:offer.elementCount
+                AvailableSeasons:offer.elementCount,
+                Price: offer.retailPriceValue,
+                Platform: offer.package.clearName,
+                Quality: offer.presentationType,
+                MonetizationType: offer.monetizationType,
             }
-            region_template.RegionProviderList.push(provider_template)
+            region_template.RegionProviders[`${offer.package.clearName} (${offer.monetizationType}) [${offer.presentationType}]`] = provider_template
         }
 
         region_template.RegionCode = region
+
+        console.log(region_template)
 
         data.RegionContents[region_dictionary[region]] = region_template
     }
@@ -232,27 +241,27 @@ async function getAllRegionInfo(entries, limit=0){
 
 
 // my personal filter (i only watch series available on Max)
-function printFilteredResult(data){
+function postprocessedResult(data){
     RegionContents = data.RegionContents
-    layer1 = RegionContents.filter(entry=>entry.RegionProviderList.length)
-    layer2 = layer1.filter(entry=>(entry.RegionProviderList.map(provider=>provider.Provider)).includes("Max"))
-    result = layer2
 
-    data.RegionContents = result
+    for (var [key, region] of Object.entries(RegionContents)){
+        Object.keys(region.RegionProviders).filter(key=>!key.includes("Max")).forEach(key=>delete region.RegionProviders[key])
+
+        if( Object.keys(region.RegionProviders).length == 0){
+            delete RegionContents[key]
+        }
+    }
+
+    data.RegionContents = RegionContents
     console.log("Filtered result for regions with HBO MAX:")
     console.log(data)
 
-    layer3 = layer2.map(entry=>{
-        return {
-            Region: entry.Region,
-            Provider: entry.RegionProviderList.filter(provider=>provider.Provider == "Max")
-        }
-    })
-
-    // select the region with the most seasons
-    layer4 = layer3.sort((a,b)=>b.Provider[0].AvailableSeasons-a.Provider[0].AvailableSeasons)
-    console.log("Filtered result for most HBO MAX season:")
-    console.log(layer4)
+    var flatten = Object.keys(data.RegionContents).map(country => {
+        return Object.keys(data.RegionContents[country].RegionProviders).map(provider => {
+            return `${country}: ${provider}, seasons: ${data.RegionContents[country].RegionProviders[provider].AvailableSeasons}`
+        }).join("\n")
+    }).join("\n")
+    console.log(flatten)
 }
 // ----------------------------------------------
 
@@ -262,13 +271,21 @@ function printFilteredResult(data){
 
 // execution zone
 await (async () => {
+    var sleep_ms = 8000
+    
     var url_list_resp = await getUrlList()
     var region_entries = url_list_resp.href_lang_tags
-
-    var data = await getAllRegionInfo(region_entries)
+    
+    var data = await getAllRegionInfo(region_entries, sleep_ms)
     var file_name = url_list_resp.heading_1.replaceAll(" ","_")
 
-    printFilteredResult(data)
-    console.save(data, `${file_name}.json`)
+    console.save(data, `raw-${file_name}.json`)
+
+    try {
+        postprocessedResult(data)
+    } catch (error) {
+        console.error("Error filtering data:", error);
+    }
+    console.save(data, `filtered-${file_name}.json`)
 })()
 // ----------------------------------------------
